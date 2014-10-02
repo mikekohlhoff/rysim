@@ -38,6 +38,23 @@ class rydberg_flyer(object):
 		
 	def load_fields(self, folder, scale, nElectrodes):
 		self.ef = EField2D(folder, [0]*nElectrodes, scale)
+		
+		self.acc = ctypes.cdll.LoadLibrary('./' + target + '.so')
+		self.acc.set_npas.argtypes = [c_uint]
+		self.acc.set_npas.restype = None
+		self.acc.add_pa.argtypes = [c_uint, c_double_p, c_double]
+		self.acc.add_pa.restype = None
+		self.acc.set_pasize.argtypes = [c_uint, c_uint, c_double, c_double]
+		self.acc.set_pasize.restype = None
+		self.acc.getFieldGradient.argtypes = [c_uint, c_double_p, c_double_p, c_double_p]
+		self.acc.getFieldGradient.restype = None
+
+		
+		self.acc.set_npas(nElectrodes)
+		self.acc.set_pasize(self.ef.nx, self.ef.ny, self.ef.dx, self.ef.dr)
+		for n in range(nElectrodes):
+			self.acc.add_pa(n, self.ef.pas[n].potential.ctypes.data_as(c_double_p), 0)
+
 	
 	def collision(self, pos, ef):
 		collision_index = np.ones_like(pos)
@@ -46,11 +63,10 @@ class rydberg_flyer(object):
 			collision_index[index, :] = 0
 		
 		return collision_index
-		
-		
+	
+	@profile
 	def fly_atoms(self, potentialPCB, n, deltaT):
-		# rLaserIntercept = self.pos
-		# vLaserIntercept = self.vel
+		k = n - 1
 		
 		posCurrent = np.zeros_like(self.pos)
 		rxCurrent = posCurrent[:, 0]
@@ -70,57 +86,63 @@ class rydberg_flyer(object):
 		rxPrev = rxPrevPrev + vxPrev*deltaT
 		ryPrev = ryPrevPrev + vyPrev*deltaT
 		
-		steps = potentialPCB.shape[1]
+		steps = potentialPCB.shape[0]
 		stopTime = steps*deltaT*1e6
 		
 		for s in np.arange(3, steps):
-			print 'Step %d, time = %5.2f mus, final time = %5.2f mus' %(s, s*deltaT*1E6, stopTime)
-			#print 'Current Position Particle 1: %15.10f, %15.10f' %(rxCurrent[0], ryCurrent[0])
+			if s % 100 == 0:
+				print 'Step %d, time = %5.2f mus, final time = %5.2f mus' %(s, s*deltaT*1E6, stopTime)
 			# adjust potential to current value
-			self.ef.fastAdjustAll(potentialPCB[:, s])
+			self.acc.fastAdjustAll(potentialPCB[s, :].ctypes.data_as(c_double_p))
+			#self.ef.fastAdjustAll(potentialPCB[s, :])
 			
 			# a(i-1) in Verlet scheme, convert to mm for POTENTIALARRAY object
 			xx = 1E3*rxPrev.T
 			yy = 1E3*ryPrev.T
 			
 			# get field gradient at r for all atoms, [POTENTIALARRAY.gradient/.fieldGradient] = V/mm./mm^2 !
-			dE = self.ef.getFieldGradient(xx,yy)*1E6
-			dEx = dE[:, 0]
-			dEy = dE[:, 1]
+			dE = np.zeros((xx.shape[0], 2), dtype=np.double)
+			self.acc.getFieldGradient(xx.shape[0], xx.ctypes.data_as(c_double_p), yy.ctypes.data_as(c_double_p), dE.ctypes.data_as(c_double_p))
+			#dE = self.ef.getFieldGradient(xx, yy)
+			dEx = dE[:, 0]*1E6
+			dEy = dE[:, 1]*1E6
 			
 			#print dEx[0], dEy[0]
 			
 			# calculate FORCE from current electric field at position of atoms
-			fx = -3/2*n*k*a0*e*dEx
-			fy = -3/2*n*k*a0*e*dEy
+			fx = -3./2*n*k*a0*e*dEx
+			fy = -3./2*n*k*a0*e*dEy
 		
 			# update POSITION
-			rxCurrent = 2*rxPrev - rxPrevPrev + deltaT**2*(fx/mass)
-			ryCurrent = 2*ryPrev - ryPrevPrev + deltaT**2*(fy/mass) 
+			rxCurrent = 2.*rxPrev - rxPrevPrev + deltaT**2.*(fx/mass)
+			ryCurrent = 2.*ryPrev - ryPrevPrev + deltaT**2.*(fy/mass) 
 		
 			# update VELOCITY
-			vxPrev = (rxCurrent - rxPrevPrev)/(2*deltaT)
-			vyPrev = (ryCurrent - ryPrevPrev)/(2*deltaT)
+			vxPrev = (rxCurrent - rxPrevPrev)/(2.*deltaT)
+			vyPrev = (ryCurrent - ryPrevPrev)/(2.*deltaT)
 		
 			# account for particles in electrode and out of potential array
-#			inElec = self.ef.isElectrode(rxCurrent, ryCurrent)
-#			inArray = self.ef.inArray(rxCurrent, ryCurrent)
+			inElec = self.ef.isElectrode(rxCurrent, ryCurrent)
+			inArray = self.ef.inArray(rxCurrent, ryCurrent)
 			# since pcb board not specified as eletrode particles below electrodes excluded
-#			abovePCB = (rxCurrent < 20.13) & (ryCurrent > 8.2e-3)
+			belowPCB = (rxCurrent >= 20.13) & (ryCurrent <= 8.2e-3)
 			
-#			includeIndices = np.where((~inElec[:, 0]) & abovePCB & inArray)
+			includeIndices = np.where(~inElec & ~belowPCB & inArray)[0]
 			
-#			rxCurrent = rxCurrent[includeIndices]
-#			ryCurrent = ryCurrent[includeIndices]
+			rxCurrent = rxCurrent[includeIndices]
+			ryCurrent = ryCurrent[includeIndices]
 			
-#			rxPrev = rxPrev[includeIndices]
-#			ryPrev = ryPrev[includeIndices]
+			rxPrev = rxPrev[includeIndices]
+			ryPrev = ryPrev[includeIndices]
 			
-#			rxPrevPrev = rxPrevPrev[includeIndices]
-#			ryPrevPrev = ryPrevPrev[includeIndices]
+			rxPrevPrev = rxPrevPrev[includeIndices]
+			ryPrevPrev = ryPrevPrev[includeIndices]
 			
-#			vxPrev = vxPrev[includeIndices]
-#			vyPrev = vyPrev[includeIndices]
+			vxPrev = vxPrev[includeIndices]
+			vyPrev = vyPrev[includeIndices]
+			
+			# throwing particles out is slower than running with all of them...
+			# but of course, they might come back and we won't notice they should have been thrown out
 			
 			rxPrevPrev = rxPrev[:]
 			ryPrevPrev = ryPrev[:]
@@ -129,16 +151,47 @@ class rydberg_flyer(object):
 			ryPrev = ryCurrent[:]
 			
 		
-		self.vel = np.array([(rxCurrent - rxPrev)/deltaT, (ryCurrent - ryPrev)/deltaT])
+		self.vel = np.array([(rxCurrent - rxPrevPrev)/deltaT, (ryCurrent - ryPrevPrev)/deltaT])
 		
 		self.pos = np.array([rxCurrent, ryCurrent])
+		
+		#self.acc.free()
 		
 
 if __name__ == '__main__':
 	from matplotlib import pyplot as plt
+	import ctypes
+	from ctypes import c_double, c_ulong, c_uint
+	c_double_p = ctypes.POINTER(c_double)
 	
-
-
+	from subprocess import call
+	target = 'simion_accelerator'
+	COMPILE = ['PROF'] # 'PROF', 'FAST', both or neither
+	# include branch prediction generation. compile final version with only -fprofile-use
+	commonopts = ['-c', '-fPIC', '-Ofast', '-march=native', '-std=c99', '-fno-exceptions', '-fomit-frame-pointer']
+	profcommand = ['gcc', '-fprofile-arcs', '-fprofile-generate', target + '.c']
+	profcommand[1:1] = commonopts
+	fastcommand = ['gcc', '-fprofile-use', target + '.c']
+	fastcommand[1:1] = commonopts
+	
+	print
+	print
+	print '==================================='
+	print 'compilation target: ', target
+	if 'PROF' in COMPILE:
+		call(profcommand)
+		call(['gcc', '-shared', '-fprofile-generate', target + '.o', '-o', target + '.so'])
+		print 'COMPILATION: PROFILING RUN'
+	if 'FAST' in COMPILE:
+		call(fastcommand)
+		call(['gcc', '-shared', target + '.o', '-o', target + '.so'])
+		print 'COMPILATION: FAST RUN'
+	if not ('PROF' in COMPILE or 'FAST' in COMPILE):
+		print 'DID NOT RECOMPILE C SOURCE'
+	print '==================================='
+	print
+	print
+	
 	
 	#TODO: parameter handling (!)
 	vBeamFwd = 700
@@ -147,7 +200,7 @@ if __name__ == '__main__':
 	k = n - 1 # maximum low-field seeking state
 	deltaT = 10e-9 # timestep 10ns
 	
-	xWidth = 1.e-5 
+	xWidth = 1.e-4
 	nElectrodes = 12
 	field_scale = 10
 	
@@ -175,9 +228,8 @@ if __name__ == '__main__':
 	print 'STARTING SIMULATION'
 	
 	flyer = rydberg_flyer()
-	
-	
 	flyer.load_fields('./potentials/', field_scale, nElectrodes)
+	
 	print 'Completed loading %d electrodes' %nElectrodes
 	
 	flyer.setInitialDistribution2D('LaserExcitedDistribution2DAr.mat', xWidth)
@@ -206,14 +258,15 @@ if __name__ == '__main__':
 	extractionMesh = np.zeros((1, timeTotal))
 	compensation = np.zeros((1, timeTotal))
 	aperture = np.zeros((1, timeTotal))
-	potentialPCB = np.concatenate((photoElectrode1, photoElectrode2, potentialPCB, surfaceBias, extractionMesh, compensation, aperture))
+	potentialPCB = np.ascontiguousarray(np.concatenate((photoElectrode1, photoElectrode2, potentialPCB, surfaceBias, extractionMesh, compensation, aperture)).T.astype(np.double))
 	
 	# percent of accepted particles of initially excited atoms
 	tic = time()
 	flyer.fly_atoms(potentialPCB, n, deltaT)
 	
-	print 'Execution took %5.2f hours' %((time()-tic)/3600.)
+	print 'Execution took %5.2f minutes' %((time()-tic)/60.)
 
 	print '--------------------------------------------------------------------------------'
 	print '\nTrajectory simulation finished\n'
+
 

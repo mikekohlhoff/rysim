@@ -182,7 +182,7 @@ class EField2D(simion):
 		self.xmax = self.nx*self.dx
 		self.rmax = self.nr*self.dr
 		
-	def getPotential(self, r, x):
+	def getPotential(self, x, r):
 		r = abs(r)
 		
 		ixf = x/self.dx - 1
@@ -222,10 +222,10 @@ class EField2D(simion):
 		hr = self.dr/2.
 		hx = self.dx/2.
 		
-		p1 = self.getPotential(r, x-hx)
-		p2 = self.getPotential(r, x+hx)
-		p3 = self.getPotential(r-hr, x)
-		p4 = self.getPotential(r+hr, x);
+		p1 = self.getPotential(x-hx, r)
+		p2 = self.getPotential(x+hx, r)
+		p3 = self.getPotential(x, r-hr)
+		p4 = self.getPotential(x, r+hr);
 		
 		dfr = (p4-p3)/self.dr
 		dfx = (p2-p1)/self.dx
@@ -332,16 +332,18 @@ class EField2D(simion):
 		#	 The gradient is calculated from the centred-difference
 		#	 approximation finite differences.
 		
-		hr = self.dr/2.
 		hx = self.dx/2.
+		hr = self.dr/2.
 		
-		p2 = self.getPotential(r, x+hx)
-		p1 = self.getPotential(r, x-hx)
-		p3 = self.getPotential(r-hr, x)
-		p4 = self.getPotential(r+hr, x);
 		
-		dfr = (p4-p3)/self.dr
+		p1 = self.getPotential(x-hx, r)
+		p2 = self.getPotential(x+hx, r)
+		print 'p2: %25.23E' %p2[0]
+		p3 = self.getPotential(x, r-hr)
+		p4 = self.getPotential(x, r+hr);
+		
 		dfx = (p2-p1)/self.dx
+		dfr = (p4-p3)/self.dr
 		
 		return np.array([dfx, dfr]).T
 	
@@ -358,20 +360,28 @@ class EField2D(simion):
 		hx = self.dx/2.
 		hr = self.dr/2.
 		
-		E0 = self.getField2(x, r)
+		E0 = self.getField(x, r)
 		normE = np.sqrt(np.sum(E0**2, 1))
 		
 		# otherwise return is NaN
 #		if normE == 0:
 #			raise RuntimeError
 		
-		dx2 = self.getField2(x+hx, r)
-		dx1 = self.getField2(x-hx, r)
+		dx2 = self.getField(x+hx, r)
+		dx1 = self.getField(x-hx, r)
+		
+		tmp = dx2 - dx1
+		
+		print 'individuals: %25.23E, %25.23E, %25.23E, %25.23E' %(tmp[0, 0], E0[0, 0], tmp[0, 1], E0[0, 1])
+		
+		print 'manual: %25.23E' %(tmp[0, 0]*E0[0, 0] + tmp[0, 1]*E0[0, 1])
+		print 'dot: %25.23E' %(tmp.dot(E0.T)[0, 0])
 		
 		dEx = np.diag(E0.dot((dx2.T-dx1.T)/self.dx))/normE
+		print 'dEx: %15.10E' %(dEx[0])
 		
-		dy2 = self.getField2(x, r+hr)
-		dy1 = self.getField2(x, r-hr)
+		dy2 = self.getField(x, r+hr)
+		dy1 = self.getField(x, r-hr)
 		dEy = np.diag(E0.dot((dy2.T-dy1.T)/self.dr))/normE
 		return np.array([dEx, dEy]).T
 
@@ -407,7 +417,7 @@ class EField2D(simion):
 		ir[ir < 0] = 0
 		ix[ix < 0] = 0
 		
-		return self.electrode_map[ix, ir]
+		return self.electrode_map[ix, ir].flatten()
 
 		
 class patxt(object):
@@ -441,7 +451,8 @@ class patxt(object):
 		assert data.shape[0] == nx*ny*nz
 		
 		self.isElectrode = data[:, 0].reshape((nx, ny, nz), order='F').astype(np.int)
-		self.potential = data[:, 1].reshape((nx, ny, nz), order='F')
+		self.potential = data[:, 1].reshape((nx, ny, nz), order='F').astype(np.double)
+		self.potential = np.ascontiguousarray(self.potential)
 		self.potential /= 10000.0
 		
 	def setVoltage(self, V):

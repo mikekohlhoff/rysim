@@ -105,7 +105,6 @@ void getSingleFieldGradient(double x, double r, double * result)
 	
 	if (normE == 0)
 	{
-		printf("normE == 0\n");
 		result[0] = 0;
 		result[1] = 0;
 		return;

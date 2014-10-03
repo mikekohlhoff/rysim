@@ -37,23 +37,8 @@ class rydberg_flyer(object):
 		self.pos += rydbergExcitationPoint.T
 		
 	def load_fields(self, folder, scale, nElectrodes):
-		self.ef = EField2D(folder, [0]*nElectrodes, scale)
+		self.ef = EField2D(folder, [0]*nElectrodes, scale, use_accelerator=True)
 		
-		self.acc = ctypes.cdll.LoadLibrary('./' + target + '.so')
-		self.acc.set_npas.argtypes = [c_uint]
-		self.acc.set_npas.restype = None
-		self.acc.add_pa.argtypes = [c_uint, c_double_p, c_double]
-		self.acc.add_pa.restype = None
-		self.acc.set_pasize.argtypes = [c_uint, c_uint, c_double, c_double]
-		self.acc.set_pasize.restype = None
-		self.acc.getFieldGradient.argtypes = [c_uint, c_double_p, c_double_p, c_double_p]
-		self.acc.getFieldGradient.restype = None
-
-		
-		self.acc.set_npas(nElectrodes)
-		self.acc.set_pasize(self.ef.nx, self.ef.ny, self.ef.dx, self.ef.dr)
-		for n in range(nElectrodes):
-			self.acc.add_pa(n, self.ef.pas[n].potential.ctypes.data_as(c_double_p), 0)
 
 	
 	def collision(self, pos, ef):
@@ -64,7 +49,6 @@ class rydberg_flyer(object):
 		
 		return collision_index
 	
-	@profile
 	def fly_atoms(self, potentialPCB, n, deltaT):
 		k = n - 1
 		
@@ -93,21 +77,16 @@ class rydberg_flyer(object):
 			if s % 100 == 0:
 				print 'Step %d, time = %5.2f mus, final time = %5.2f mus' %(s, s*deltaT*1E6, stopTime)
 			# adjust potential to current value
-			self.acc.fastAdjustAll(potentialPCB[s, :].ctypes.data_as(c_double_p))
-			#self.ef.fastAdjustAll(potentialPCB[s, :])
+			self.ef.fastAdjustAll(potentialPCB[s, :])
 			
 			# a(i-1) in Verlet scheme, convert to mm for POTENTIALARRAY object
 			xx = 1E3*rxPrev.T
 			yy = 1E3*ryPrev.T
 			
 			# get field gradient at r for all atoms, [POTENTIALARRAY.gradient/.fieldGradient] = V/mm./mm^2 !
-			dE = np.zeros((xx.shape[0], 2), dtype=np.double)
-			self.acc.getFieldGradient(xx.shape[0], xx.ctypes.data_as(c_double_p), yy.ctypes.data_as(c_double_p), dE.ctypes.data_as(c_double_p))
-			#dE = self.ef.getFieldGradient(xx, yy)
-			dEx = dE[:, 0]*1E6
-			dEy = dE[:, 1]*1E6
-			
-			#print dEx[0], dEy[0]
+			dE = self.ef.getFieldGradient(xx, yy)*1E6
+			dEx = dE[:, 0]
+			dEy = dE[:, 1]
 			
 			# calculate FORCE from current electric field at position of atoms
 			fx = -3./2*n*k*a0*e*dEx
@@ -155,43 +134,9 @@ class rydberg_flyer(object):
 		
 		self.pos = np.array([rxCurrent, ryCurrent])
 		
-		#self.acc.free()
-		
 
 if __name__ == '__main__':
-	from matplotlib import pyplot as plt
-	import ctypes
-	from ctypes import c_double, c_ulong, c_uint
-	c_double_p = ctypes.POINTER(c_double)
-	
-	from subprocess import call
-	target = 'simion_accelerator'
-	COMPILE = ['PROF'] # 'PROF', 'FAST', both or neither
-	# include branch prediction generation. compile final version with only -fprofile-use
-	commonopts = ['-c', '-fPIC', '-Ofast', '-march=native', '-std=c99', '-fno-exceptions', '-fomit-frame-pointer']
-	profcommand = ['gcc', '-fprofile-arcs', '-fprofile-generate', target + '.c']
-	profcommand[1:1] = commonopts
-	fastcommand = ['gcc', '-fprofile-use', target + '.c']
-	fastcommand[1:1] = commonopts
-	
-	print
-	print
-	print '==================================='
-	print 'compilation target: ', target
-	if 'PROF' in COMPILE:
-		call(profcommand)
-		call(['gcc', '-shared', '-fprofile-generate', target + '.o', '-o', target + '.so'])
-		print 'COMPILATION: PROFILING RUN'
-	if 'FAST' in COMPILE:
-		call(fastcommand)
-		call(['gcc', '-shared', target + '.o', '-o', target + '.so'])
-		print 'COMPILATION: FAST RUN'
-	if not ('PROF' in COMPILE or 'FAST' in COMPILE):
-		print 'DID NOT RECOMPILE C SOURCE'
-	print '==================================='
-	print
-	print
-	
+	from matplotlib import pyplot as plt	
 	
 	#TODO: parameter handling (!)
 	vBeamFwd = 700
@@ -268,5 +213,8 @@ if __name__ == '__main__':
 
 	print '--------------------------------------------------------------------------------'
 	print '\nTrajectory simulation finished\n'
+	
+	plt.plot(flyer.pos[0, :], flyer.pos[1, :], 'x')
+	plt.show()
 
 

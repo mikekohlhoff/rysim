@@ -1,6 +1,11 @@
 import numpy as np
 import os
 
+import ctypes
+from ctypes import c_double, c_ulong, c_uint
+c_double_p = ctypes.POINTER(c_double)
+
+
 class simion(object):
 	def __init__(self, filename, voltages):
 		
@@ -19,7 +24,7 @@ class simion(object):
 		self.nz = int(self.pas[0].parameters['nz'])
 		
 		# make a global electrode map
-		self.electrode_map = np.zeros((self.nx, self.ny, self.nz)).astype(np.int)
+		self.electrode_map = np.zeros((self.nx, self.ny, self.nz)).astype(np.bool)
 		for p in self.pas:
 			self.electrode_map |= p.isElectrode
 			
@@ -37,6 +42,64 @@ class simion(object):
 		for p in self.pas:
 			value += p.getPotential(ix, iy, iz)
 		return value
+		
+		
+class accelerator(object):
+	def __init__(self):
+		target = 'simion_accelerator'
+		if not os.path.exists(target + '.so') or os.stat(target + '.c').st_mtime > os.stat(target + '.so').st_mtime: # we need to recompile
+			from subprocess import call
+			
+			COMPILE = ['PROF'] # 'PROF', 'FAST', both or neither
+			# include branch prediction generation. compile final version with only -fprofile-use
+			commonopts = ['-c', '-fPIC', '-Ofast', '-march=native', '-std=c99', '-fno-exceptions', '-fomit-frame-pointer']
+			profcommand = ['gcc', '-fprofile-arcs', '-fprofile-generate', target + '.c']
+			profcommand[1:1] = commonopts
+			fastcommand = ['gcc', '-fprofile-use', target + '.c']
+			fastcommand[1:1] = commonopts
+
+			print
+			print
+			print '==================================='
+			print 'compilation target: ', target
+			if 'PROF' in COMPILE:
+				if call(profcommand) != 0:
+					print 'COMPILATION FAILED!'
+					raise RuntimeError
+				call(['gcc', '-shared', '-fprofile-generate', target + '.o', '-o', target + '.so'])
+				print 'COMPILATION: PROFILING RUN'
+			if 'FAST' in COMPILE:
+				call(fastcommand)
+				call(['gcc', '-shared', target + '.o', '-o', target + '.so'])
+				print 'COMPILATION: FAST RUN'
+			if not ('PROF' in COMPILE or 'FAST' in COMPILE):
+				print 'DID NOT RECOMPILE C SOURCE'
+			print '==================================='
+			print
+			print
+		else:
+			print 'library up to date, not recompiling accelerator'
+		
+		
+		self.acc = ctypes.cdll.LoadLibrary('./' + target + '.so')
+		
+		self.acc.set_npas.argtypes = [c_uint]
+		self.acc.set_npas.restype = None
+		self.acc.add_pa.argtypes = [c_uint, c_double_p, c_double]
+		self.acc.add_pa.restype = None
+		self.acc.set_pasize.argtypes = [c_uint, c_uint, c_double, c_double]
+		self.acc.set_pasize.restype = None
+		self.acc.getFieldGradient.argtypes = [c_uint, c_double_p, c_double_p, c_double_p]
+		self.acc.getFieldGradient.restype = None
+		self.acc.fastAdjustAll.argtypes = [c_double_p]
+		self.acc.fastAdjustAll.restype = None
+		
+		self.set_npas = self.acc.set_npas
+		self.add_pa = self.acc.add_pa
+		self.set_pasize = self.acc.set_pasize
+		self.getFieldGradient = self.acc.getFieldGradient
+		self.fastAdjustAll = self.acc.fastAdjustAll
+
 
 class EField3D(object):
 	def __init__(self, filename, voltages, scale, offset):
@@ -105,7 +168,7 @@ class EField3D(object):
 		
 		return (zd*k2 + (1-zd)*k1)
 		
-	def getField(self, pos):
+	def getField3(self, pos):
 		# GRADIENT Calculate the potential gradient at r,x.
 		# The gradient is calculated from the central-difference
 		# approximation finite differences.
@@ -130,7 +193,7 @@ class EField3D(object):
 		return np.array([dfx, dfy, dfz]).T
 		
 
-	def inArray(self, pos):
+	def inArray3(self, pos):
 		x = pos[:,0]
 		y = pos[:,1]
 		z = pos[:,2]
@@ -139,7 +202,7 @@ class EField3D(object):
 	def fastAdjust(self, n, v):
 		self.simion.fastAdjust(n, v)
 		
-	def isElectrode (self, pos):
+	def isElectrode3(self, pos):
 		# ISELECTRODE Test if point r, x is within an electrode.
 		# Returns true if (r, x) is inside an electrode.
 		
@@ -163,15 +226,10 @@ class EField3D(object):
 		iy[iy < 0] = 0
 		iz[iz < 0] = 0
 		
-		
-		# return self.iselec(sub2ind(size(this.elec), ix, iy, iz)) == 1;
-		return np.where(self.simion.electrode_map[ix, iy, iz])
-
-
+		return self.simion.electrode_map[ix, iy, iz].flatten()
 
 class EField2D(simion):
-	def __init__(self, filename, voltages, scale):
-		#self.simion = simion(filename, voltages)
+	def __init__(self, filename, voltages, scale, use_accelerator = False):
 		super(EField2D, self).__init__(filename, voltages)
 		
 		self.dx = 1./scale
@@ -181,6 +239,24 @@ class EField2D(simion):
 		
 		self.xmax = self.nx*self.dx
 		self.rmax = self.nr*self.dr
+		
+		if use_accelerator:
+			a = accelerator()
+			a.set_npas(len(voltages))
+			a.set_pasize(self.nx, self.nr, self.dx, self.dr)
+			for n, p in enumerate(self.pas):
+				a.add_pa(n, p.potential.ctypes.data_as(c_double_p), 0)
+			
+			self.fastAdjustAll = lambda V: a.fastAdjustAll(V.ctypes.data_as(c_double_p))
+			def helper(xx, yy):
+				dE = np.zeros((xx.shape[0], 2), dtype=np.double)
+				a.getFieldGradient(xx.shape[0], xx.ctypes.data_as(c_double_p), yy.ctypes.data_as(c_double_p), dE.ctypes.data_as(c_double_p))
+				return dE
+			self.getFieldGradient = helper
+			self.getField = None 			# to prevent anyone from accidentally trying to call these
+			self.getField3 = None
+			self.getPotential = None
+
 		
 	def getPotential(self, x, r):
 		r = abs(r)
@@ -211,7 +287,7 @@ class EField2D(simion):
 		return ((Q11*r2*x2) + (Q21*r1*x2) + (Q12*r2*x1) + (Q22*x1*r1))/(self.dx*self.dr)
 		
 	
-	def getField(self, pos):
+	def getField3(self, pos):
 		# GRADIENT Calculate the potential gradient at r,x.
 		#	 The gradient is calculated from the centred-difference
 		#	 approximation finite differences.
@@ -233,98 +309,6 @@ class EField2D(simion):
 		dfy = dfr*np.sin(np.arctan2(pos[:, 1], pos[:, 2]))
 		dfz = dfr*np.cos(np.arctan2(pos[:, 1], pos[:, 2]))
 		return np.array([dfx, dfy, dfz]).T
-		
-	def getField2(self, x, r):
-		# GRADIENT Calculate the potential gradient at r,x.
-		#	The gradient is calculated from the centred-difference
-		#	approximation finite differences.
-		# here we do an integrated version not relying on getPotential, to reduce double evaluation of points
-		
-		hr = self.dr/2.
-		hx = self.dx/2.
-		
-		r = abs(r)
-		
-		# for r, x+hx:
-		xp = x + hx
-		xm = x - hx
-		rp = r + hr
-		rm = r - hr
-		
-		
-		ixp = xp/self.dx - 1
-		ixm = xm/self.dx - 1
-		ix0 = x/self.dx - 1
-		irp = rp/self.dr - 1
-		irm = rm/self.dr - 1
-		ir0 = r/self.dr - 1
-		
-		# Integer part of potential array index.
-		ix0 = np.where(np.ceil(ix0) < self.nx - 1, np.ceil(ix0), self.nx-2).astype(np.int)
-		ixp = np.where(np.ceil(ixp) < self.nx - 1, np.ceil(ixp), self.nx-2).astype(np.int)
-		ixm = np.where(np.ceil(ixm) < self.nx - 1, np.ceil(ixm), self.nx-2).astype(np.int)
-		ir0 = np.where(np.ceil(ir0) < self.nr - 1, np.ceil(ir0), self.nr-2).astype(np.int)
-		irp = np.where(np.ceil(irp) < self.nr - 1, np.ceil(irp), self.nr-2).astype(np.int)
-		irm = np.where(np.ceil(irm) < self.nr - 1, np.ceil(irm), self.nr-2).astype(np.int)
-		
-		ix0[ix0 < 0] = 0
-		ixp[ixp < 0] = 0
-		ixm[ixm < 0] = 0
-		ir0[ir0 < 0] = 0
-		irp[irp < 0] = 0
-		irm[irm < 0] = 0
-		
-		
-		# smallest possible value is ixm, biggest value ixp + 1 (ir analogous)
-		# but doing this right is quite tricky when acting on arrays
-		# in single-particle this would be fairly trivial
-		
-		Q11p0 = super(EField2D, self).getPotential(ixp,	 ir0,	 0)
-		Q12p0 = super(EField2D, self).getPotential(ixp+1, ir0,	 0)
-		Q21p0 = super(EField2D, self).getPotential(ixp,	 ir0+1, 0)
-		Q22p0 = super(EField2D, self).getPotential(ixp+1, ir0+1, 0)
-		
-		Q11m0 = super(EField2D, self).getPotential(ixm,	 ir0,	 0)
-		Q12m0 = super(EField2D, self).getPotential(ixm+1, ir0,	 0)
-		Q21m0 = super(EField2D, self).getPotential(ixm,	 ir0+1, 0)
-		Q22m0 = super(EField2D, self).getPotential(ixm+1, ir0+1, 0)
-		
-		Q110p = super(EField2D, self).getPotential(ix0,	 irp,	 0)
-		Q120p = super(EField2D, self).getPotential(ix0+1, irp,	 0)
-		Q210p = super(EField2D, self).getPotential(ix0,	 irp+1, 0)
-		Q220p = super(EField2D, self).getPotential(ix0+1, irp+1, 0)
-		
-		Q110m = super(EField2D, self).getPotential(ix0,	 irm,	 0)
-		Q120m = super(EField2D, self).getPotential(ix0+1, irm,	 0)
-		Q210m = super(EField2D, self).getPotential(ix0,	 irm+1, 0)
-		Q220m = super(EField2D, self).getPotential(ix0+1, irm+1, 0)
-		
-		# Calculate distance of point from gridlines.
-		x10 = (ix0 - np.floor(ix0))
-		x20 = 1-x10
-		x1p = (ixp - np.floor(ixp))
-		x2p = 1-x1p
-		x1m = (ixm - np.floor(ixm))
-		x2m = 1-x1m
-		
-		r10 = (ir0 - np.floor(ir0))
-		r20 = 1-r10
-		r1p = (irp - np.floor(irp))
-		r2p = 1-r1p
-		r1m = (irm - np.floor(irm))
-		r2m = 1-r1m
-		
-		
-		p1 = ((Q11m0*r20*x2m) + (Q21m0*r10*x2m) + (Q12m0*r20*x1m) + (Q22m0*x1m*r10))
-		p2 = ((Q11p0*r20*x2p) + (Q21p0*r10*x2p) + (Q12p0*r20*x1p) + (Q22p0*x1p*r10))
-		p3 = ((Q110m*r2m*x20) + (Q210m*r1m*x20) + (Q120m*r2m*x10) + (Q220m*x10*r1m))
-		p4 = ((Q110p*r2p*x20) + (Q210p*r1p*x20) + (Q120p*r2p*x10) + (Q220p*x10*r1p))
-		
-		dfr = (p4-p3)/self.dr
-		dfx = (p2-p1)/self.dx
-		
-		return np.array([dfx, dfr]).T
-
 		
 	
 	def getField(self, x, r):
@@ -369,16 +353,7 @@ class EField2D(simion):
 		
 		dx2 = self.getField(x+hx, r)
 		dx1 = self.getField(x-hx, r)
-		
-		tmp = dx2 - dx1
-		
-		print 'individuals: %25.23E, %25.23E, %25.23E, %25.23E' %(tmp[0, 0], E0[0, 0], tmp[0, 1], E0[0, 1])
-		
-		print 'manual: %25.23E' %(tmp[0, 0]*E0[0, 0] + tmp[0, 1]*E0[0, 1])
-		print 'dot: %25.23E' %(tmp.dot(E0.T)[0, 0])
-		
 		dEx = np.diag(E0.dot((dx2.T-dx1.T)/self.dx))/normE
-		print 'dEx: %15.10E' %(dEx[0])
 		
 		dy2 = self.getField(x, r+hr)
 		dy1 = self.getField(x, r-hr)
@@ -386,7 +361,7 @@ class EField2D(simion):
 		return np.array([dEx, dEy]).T
 
 
-	def inArray(self, pos):
+	def inArray3(self, pos):
 		r = np.sqrt(pos[:,1]**2+pos[:,2]**2)
 		x = pos[:,0]
 		return self.inArray(x, r)
@@ -394,12 +369,12 @@ class EField2D(simion):
 	def inArray(self, x, r):
 		return (r >= 0) & (x > 0) & (r < self.rmax) & (x < self.xmax)
 		
-	def isElectrode(self, pos):
+	def isElectrode3(self, pos):
 		# ISELECTRODE Test if point r, x is within an electrode.
 		#	 Returns true if (r, x) is inside an electrode.
 		
 		r = np.sqrt(pos[:, 1]**2 + pos[:, 2]**2)
-		x = pos[:, 1]
+		x = pos[:, 0]
 		
 		return self.isElectrode(x, r)
 	
@@ -450,7 +425,7 @@ class patxt(object):
 		
 		assert data.shape[0] == nx*ny*nz
 		
-		self.isElectrode = data[:, 0].reshape((nx, ny, nz), order='F').astype(np.int)
+		self.isElectrode = data[:, 0].reshape((nx, ny, nz), order='F').astype(np.bool)
 		self.potential = data[:, 1].reshape((nx, ny, nz), order='F').astype(np.double)
 		self.potential = np.ascontiguousarray(self.potential)
 		self.potential /= 10000.0

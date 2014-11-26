@@ -1,13 +1,16 @@
 import numpy as np
 from scipy.interpolate import UnivariateSpline
-from readSimion import EField3D, EField2D
 from scipy.io import loadmat
-
 from time import time
-
 from matplotlib import pyplot as plt
-
 from generateWaveformPotentials import generateWaveformPotentials
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), '..'))
+
+from simioniser.EField2D import EField2D
+from simioniser.EField3D import EField3D
 
 # CONSTANTS
 # mass of hydrogen
@@ -19,7 +22,7 @@ a0 = 5.291772109217e-11
 # elementary charge / C
 e = 1.60217656535e-19
 
-class rydberg_flyer(object):
+class RSDTrajSim(object):
 	def __init__(self):
 		pass
 	
@@ -27,7 +30,7 @@ class rydberg_flyer(object):
 		A = loadmat(filename)
 		
 		# this is still a 3D distribution, so for the 2D simulation we're interested in here
-		# we select a central slice only, and disregard the x-axis afterwards
+		# select a central slice only, and disregard the x-axis afterwards
 		mask = (A['rLasersIntercept'][0] > -xWidth/2) & (A['rLasersIntercept'][0] < xWidth/2)
 		self.pos = np.flipud(A['rLasersIntercept'][1:3, mask])
 		self.vel = np.flipud(A['vLasersIntercept'][1:3, mask])
@@ -36,12 +39,12 @@ class rydberg_flyer(object):
 		rydbergExcitationPoint = np.array([[102, 87.5]])*np.array([[self.ef.dx, self.ef.dr]])*1E-3
 		self.pos += rydbergExcitationPoint.T
 		
-	def load_fields(self, folder, scale, nElectrodes):
+	def loadFields(self, folder, scale, nElectrodes):
 		self.ef = EField2D(folder, [0]*nElectrodes, scale, use_accelerator=True)
 		
-
 	
 	def collision(self, pos, ef):
+        # atoms hit gridpoint declared as electrode
 		collision_index = np.ones_like(pos)
 		for f in ef:
 			index = f.isElectrode(pos)
@@ -49,7 +52,8 @@ class rydberg_flyer(object):
 		
 		return collision_index
 	
-	def fly_atoms(self, potentialPCB, n, deltaT):
+	def propagateAtoms(self, potentialPCB, n, deltaT):
+        # propagate atoms with position Verlet
 		k = n - 1
 		
 		posCurrent = np.zeros_like(self.pos)
@@ -172,14 +176,14 @@ if __name__ == '__main__':
 	print '--------------------------------------------------------------------------------'
 	print 'STARTING SIMULATION'
 	
-	flyer = rydberg_flyer()
-	flyer.load_fields('./potentials/', field_scale, nElectrodes)
+	propagator = RSDTrajSim()
+	propagator.loadFields('./Potentials/', field_scale, nElectrodes)
 	
 	print 'Completed loading %d electrodes' %nElectrodes
 	
-	flyer.setInitialDistribution2D('LaserExcitedDistribution2DAr.mat', xWidth)
+	propagator.setInitialDistribution2D('LaserExcitedDistribution2DAr.mat', xWidth)
 	
-	print 'Initial distribution created, ', flyer.pos.shape[1], ' particles'
+	print 'Initial distribution created, ', propagator.pos.shape[1], ' particles'
 	print '--------------------------------------------------------------------------------'
 
 	print '\nTrajectory simulation started ...'
@@ -207,14 +211,14 @@ if __name__ == '__main__':
 	
 	# percent of accepted particles of initially excited atoms
 	tic = time()
-	flyer.fly_atoms(potentialPCB, n, deltaT)
+	propagator.propagateAtoms(potentialPCB, n, deltaT)
 	
 	print 'Execution took %5.2f minutes' %((time()-tic)/60.)
 
 	print '--------------------------------------------------------------------------------'
 	print '\nTrajectory simulation finished\n'
 	
-	plt.plot(flyer.pos[0, :], flyer.pos[1, :], 'x')
+	plt.plot(propagator.pos[0, :], propagator.pos[1, :], 'x')
 	plt.show()
 
 

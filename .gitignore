@@ -1,5 +1,6 @@
 .DS_Store
 Potentials
 LaserExcitedDistribution2DAr.mat
+LaserExcitedDistribution*
 *.swp
 *.pyc

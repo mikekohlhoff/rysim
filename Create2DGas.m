@@ -27,7 +27,7 @@ e = 1.60217656535e-19;
 if strcmp(SeedingGas, 'NH3')
 vBeamFwd = 2500;
 elseif strcmp(SeedingGas, 'He')
-vBeamFwd = 1600;
+vBeamFwd = 1350;
 elseif strcmp(SeedingGas, 'Ne')
 vBeamFwd = 975;
 elseif strcmp(SeedingGas, 'Ar')
@@ -48,11 +48,12 @@ else
     GasExpansion(SeedingGas);
     load(gasFile);
 end
-return
+
 % width of slice out of 3D distribution
-xWidth = 1E-3;
+xWidth = 15E-3;
 % create roughly 1E4 particles for 2D slice from initial 3D expansion
 if exist(['LaserExcitedDistribution2D' SeedingGas '.mat'], 'file') == 0
+    SeedingGas
     % gives roughly 10E3 particles 
     NSim = 11.3E4;
 

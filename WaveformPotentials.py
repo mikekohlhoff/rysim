@@ -140,7 +140,30 @@ class WaveformPotentials23Elec:
             pcbpot = ascontiguousarray(concatenate((photoElectrode1, photoElectrode2, self.potentialsOut, compensationPot, aperturePot, surfaceBias, extractionMesh)).T.astype(double))
             
             return pcbpot
-        
+
+    def buildArrayNoSurf(self,deltaT,wfstartdelay,PEE1,PEE2,comp,aperture,tend):
+            # stack pcbpot with zeros before and after
+            # delay between Rydberg excitation and onset of waveform potentials
+            offset = zeros((6, round(wfstartdelay/deltaT)))
+            # time after waveform sequence
+            tend = tend - wfstartdelay - (self.potentialsOut.shape[1]*deltaT)
+            aftertime = zeros((6, round(tend/deltaT)))
+            self.potentialsOut = hstack((offset, self.potentialsOut, aftertime))
+
+            # include potentials for photo excitation electrodes, surface and extraction mesh
+            # and compensation electrode if applicable
+            timeTotal = self.potentialsOut.shape[1]
+            photoElectrode1 = zeros((1, timeTotal))
+            photoElectrode2 = zeros((1, timeTotal))
+            # voltage of Rydberg excitation pulsed
+            photoElectrode1[:round(wfstartdelay/deltaT)] = PEE1
+            photoElectrode2[:round(wfstartdelay/deltaT)] = PEE2
+            compensationPot = comp*ones((1, timeTotal))
+            aperturePot = aperture*ones((1, timeTotal))
+            pcbpot = ascontiguousarray(concatenate((photoElectrode1, photoElectrode2, self.potentialsOut, compensationPot, aperturePot)).T.astype(double))
+            
+            return pcbpot
+  
     def plot(self):
         if hasattr(self, 'plotTime'):
             argX = self.plotTime

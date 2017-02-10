@@ -37,7 +37,7 @@ function GasExpansion(seedingGas)
     if strcmp(seedingGas, 'NH3')
     vBeamFwd = 2500;
     elseif strcmp(seedingGas, 'He')
-    vBeamFwd = 1600;
+    vBeamFwd = 1350;
     elseif strcmp(seedingGas, 'Ne')
     vBeamFwd = 975;
     elseif strcmp(seedingGas, 'Ar')
@@ -127,7 +127,7 @@ function GasExpansion(seedingGas)
     if strcmp(seedingGas, 'NH3')
         temperature = 80;
     elseif strcmp(seedingGas, 'He')
-        temperature = 20;
+        temperature = 22;
     elseif strcmp(seedingGas,  'Ne')
         temperature = 30;
     elseif strcmp(seedingGas,  'Ar')
